@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>📊 Dashboard</h1>
+        <p class="subtitle">Monitorización en tiempo real del sistema de acceso</p>
+    </div>
+    <div class="ws-status" id="wsStatus">
+        <span class="ws-dot"></span>
+        <span id="wsStatusText">Conectando...</span>
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-grid">
+    <div class="stat-card blue">
+        <div class="stat-icon">👥</div>
+        <div class="stat-value" id="statTotalUsuarios">{{ total_usuarios }}</div>
+        <div class="stat-label">Usuarios registrados</div>
+    </div>
+    <div class="stat-card green">
+        <div class="stat-icon">🟢</div>
+        <div class="stat-value" id="statEntradas">{{ stats.entradas or 0 }}</div>
+        <div class="stat-label">Entradas hoy</div>
+    </div>
+    <div class="stat-card cyan">
+        <div class="stat-icon">🔵</div>
+        <div class="stat-value" id="statSalidas">{{ stats.salidas or 0 }}</div>
+        <div class="stat-label">Salidas hoy</div>
+    </div>
+    <div class="stat-card amber">
+        <div class="stat-icon">🕐</div>
+        <div class="stat-value" id="statUltimaAct">{{ ahora }}</div>
+        <div class="stat-label">Última actualización</div>
+    </div>
+</div>
+
+<!-- Pending cards container -->
+<div id="pendingCardsContainer"></div>
+
+<!-- Access Log -->
+<div class="panel">
+    <div class="panel-header">
+        <h2><i class="bi bi-clock-history"></i> Últimos Accesos</h2>
+    </div>
+    <div class="panel-body">
+        <table class="data-table" id="accessTable">
+            <thead>
+                <tr>
+                    <th>Fecha y Hora</th>
+                    <th>Nombre</th>
+                    <th>UID Tarjeta</th>
+                    <th>Evento</th>
+                </tr>
+            </thead>
+            <tbody id="accessTableBody">
+                {% for a in accesos %}
+                <tr>
+                    <td>{{ a.fecha_hora }}</td>
+                    <td class="col-name">{{ a.nombre_usuario or a.nombre }}</td>
+                    <td><span class="col-uid">{{ a.uid_limpio }}</span></td>
+                    <td>
+                        {% if a.evento == 'ENTRADA' %}
+                        <span class="badge badge-entrada"><i class="bi bi-arrow-right-circle"></i> ENTRADA</span>
+                        {% else %}
+                        <span class="badge badge-salida"><i class="bi bi-arrow-left-circle"></i> SALIDA</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not accesos %}
+                <tr id="emptyRow">
+                    <td colspan="4">
+                        <div class="empty-state">
+                            <div class="empty-icon">📡</div>
+                            <p>Esperando accesos... Pasa una tarjeta por el lector.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ===================== WEB SOCKET =====================
+    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+    ws.onopen = () => {
+        const status = document.getElementById('wsStatus');
+        const text = document.getElementById('wsStatusText');
+        status.className = 'ws-status online';
+        text.textContent = 'En vivo';
+    };
+
+    ws.onmessage = function (event) {
+        const msg = JSON.parse(event.data);
+
+        if (msg.tipo === "nuevo_acceso") {
+            addAccessRow(msg.datos);
+            updateStats();
+        }
+        else if (msg.tipo === "tarjeta_nueva") {
+            mostrarModalNuevaTarjeta(msg.datos.uid);
+        }
+    };
+
+    // ===================== MODAL TARJETA NUEVA =====================
+    function mostrarModalNuevaTarjeta(uid) {
+        if (document.getElementById('modal-nueva-tarjeta')) return;
+
+        const modalHTML = `
+        <div id="modal-nueva-tarjeta" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:10000;display:flex;align-items:center;justify-content:center;">
+            <div style="background:#1e2937;padding:35px;border-radius:16px;width:90%;max-width:480px;text-align:center;color:white;">
+                <h2 style="color:#eab308;">💳 Tarjeta Nueva Detectada</h2>
+                <p style="font-family:monospace;background:#334155;padding:12px;border-radius:8px;margin:20px 0;">
+                    UID: <strong>${uid}</strong>
+                </p>
+                <input type="text" id="nombre-nuevo" placeholder="Nombre completo del usuario" 
+                       style="width:100%;padding:14px;margin:15px 0;border-radius:8px;border:none;font-size:16px;">
+                <div style="margin-top:25px;">
+                    <button onclick="registrarNuevaTarjeta('${uid}')" 
+                            style="background:#22c55e;color:black;border:none;padding:14px 32px;border-radius:10px;font-weight:bold;margin-right:10px;">
+                        ✅ Registrar Usuario
+                    </button>
+                    <button onclick="cerrarModalNueva()" 
+                            style="background:#64748b;color:white;border:none;padding:14px 25px;border-radius:10px;">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        setTimeout(() => document.getElementById('nombre-nuevo').focus(), 200);
+    }
+
+    window.registrarNuevaTarjeta = function (uid) {
+        const nombre = document.getElementById('nombre-nuevo').value.trim();
+        if (!nombre) {
+            alert("Por favor introduce un nombre");
+            return;
+        }
+
+        fetch('/api/usuarios', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `nombre=${encodeURIComponent(nombre)}&uid=${encodeURIComponent(uid)}`
+        })
+            .then(() => {
+                alert(`✅ Usuario "${nombre}" registrado correctamente`);
+                cerrarModalNueva();
+            })
+            .catch(() => alert("Error al registrar"));
+    };
+
+    window.cerrarModalNueva = function () {
+        const modal = document.getElementById('modal-nueva-tarjeta');
+        if (modal) modal.remove();
+    };
+
+    // ===================== FUNCIONES AUXILIARES =====================
+    function addAccessRow(data) {
+        const tbody = document.getElementById('accessTableBody');
+        const emptyRow = document.getElementById('emptyRow');
+        if (emptyRow) emptyRow.remove();
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+        <td>${data.fecha_hora}</td>
+        <td class="col-name">${data.nombre}</td>
+        <td><span class="col-uid">${data.uid_limpio || data.uid}</span></td>
+        <td><span class="badge ${data.evento === 'ENTRADA' ? 'badge-entrada' : 'badge-salida'}">${data.evento}</span></td>
+    `;
+        tbody.insertBefore(tr, tbody.firstChild);
+    }
+
+    async function updateStats() {
+        try {
+            const res = await fetch('/api/stats');
+            const data = await res.json();
+            document.getElementById('statEntradas').textContent = data.entradas_hoy || 0;
+            document.getElementById('statSalidas').textContent = data.salidas_hoy || 0;
+            document.getElementById('statTotalUsuarios').textContent = data.total_usuarios || 0;
+        } catch (e) {
+            console.error("Error actualizando stats");
+        }
+    }
+
+    function showToast(type, title, message) {
+        console.log(`[${type}] ${title}: ${message}`);
+    }
+</script>
+{% endblock %}

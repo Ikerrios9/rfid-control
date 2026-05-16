@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: rfid-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: rfid
+      POSTGRES_PASSWORD: rfidpassword
+      POSTGRES_DB: rfid
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rfid -d rfid"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    container_name: rfid-app
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: rfid
+      DB_PASSWORD: rfidpassword
+      DB_NAME: rfid
+      # CLOUD_DATABASE_URL: postgresql://...  # opcional, para sync_to_cloud.py
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    cap_add:
+      - ALL
+    security_opt:
+      - label=disable
+
+volumes:
+  postgres_data:

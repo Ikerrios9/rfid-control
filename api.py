@@ -1,0 +1,674 @@
+"""
+RFID Control — API + Frontend + Lector RFID integrado
+Todo en un solo servidor.
+"""
+from fastapi import FastAPI, Request, Form, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from datetime import datetime
+import uvicorn
+import asyncio
+import threading
+import json
+import io
+import os
+
+from db import DB
+from repositorio import RFIDRepo
+from auth import (
+    hash_password, verify_password, create_token, decode_token,
+    get_current_user, COOKIE_NAME, ensure_default_admin
+)
+
+# ══════════════════════════════════════════════════════════════
+#  Configuración
+# ══════════════════════════════════════════════════════════════
+
+app = FastAPI(title="RFID Control — IES D. Antonio Hellín Costa")
+
+db = DB()
+repo = RFIDRepo(db)
+
+# ===================== TEMPLATES (FIX DEFINITIVO) =====================
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+# Configuración ultra segura
+jinja_env = Environment(
+    loader=FileSystemLoader("templates"),
+    autoescape=select_autoescape(),
+    cache_size=0,
+    auto_reload=True
+)
+
+templates = Jinja2Templates(directory="templates")
+templates.env = jinja_env
+# ===================== RENDERIZADO SIMPLE =====================
+def render_template(filename: str, context: dict = None):
+    if context is None:
+        context = {}
+    try:
+        with open(f"templates/{filename}", "r", encoding="utf-8") as f:
+            content = f.read()
+        for key, value in context.items():
+            content = content.replace(f"{{{{ {key} }}}}", str(value))
+        return HTMLResponse(content)
+    except Exception as e:
+        print(f"Error rendering {filename}: {e}")
+        return HTMLResponse(f"<h1>Error al cargar {filename}</h1>", status_code=500)
+# ══════════════════════════════════════════════════════════════
+#  WebSocket Manager — tiempo real
+# ══════════════════════════════════════════════════════════════
+
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, message: dict):
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_json(message)
+            except:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+manager = ConnectionManager()
+
+# Variable global para tarjetas pendientes de registro
+pending_cards: dict[str, datetime] = {}  # uid -> timestamp detección
+
+# ══════════════════════════════════════════════════════════════
+#  Lector RFID — hilo en segundo plano
+# ══════════════════════════════════════════════════════════════
+
+rfid_loop = None  # referencia al event loop de asyncio
+
+def rfid_reader_thread(loop):
+    """Hilo que lee tarjetas RFID y notifica vía WebSocket."""
+    try:
+        from smartcard.System import readers
+        from smartcard.util import toHexString
+        from smartcard.Exceptions import CardRequestTimeoutException
+        from smartcard.CardRequest import CardRequest
+        from smartcard.CardType import AnyCardType
+        import time
+
+        available_readers = readers()
+        if not available_readers:
+            print("⚠️  No se detectó ningún lector RFID. El modo lector está desactivado.")
+            return
+
+        reader = available_readers[0]
+        print(f"📡 Lector RFID activo: {reader}")
+        print("   Listo para leer tarjetas...\n")
+
+        while True:
+            try:
+                card_request = CardRequest(timeout=5, cardType=AnyCardType())
+                card_service = card_request.waitforcard()
+
+                connection = card_service.connection
+                connection.connect()
+
+                GET_UID = [0xFF, 0xCA, 0x00, 0x00, 0x00]
+                data, sw1, sw2 = connection.transmit(GET_UID)
+
+                if sw1 == 0x90 and sw2 == 0x00:
+                    uid_clean = toHexString(data).replace(" ", "").upper()
+                    usuario = repo.get_usuario(uid_clean)
+
+                    if usuario:
+                        # Usuario registrado → alternar entrada/salida
+                        nombre = usuario["nombre"]
+                        ultimo = usuario["ultimo_evento"]
+                        evento = "SALIDA" if ultimo == "ENTRADA" else "ENTRADA"
+                        ahora = datetime.now()
+
+                        repo.insertar_acceso(uid_clean, nombre, evento, ahora)
+                        repo.actualizar_ultimo_evento(uid_clean, evento)
+
+                        print(f"  ✅ {nombre} — {evento} — {ahora.strftime('%H:%M:%S')}")
+
+                        # Notificar al frontend vía WebSocket
+                        asyncio.run_coroutine_threadsafe(
+                            manager.broadcast({
+                                "tipo": "nuevo_acceso",
+                                "datos": {
+                                    "fecha_hora": ahora.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "nombre": nombre,
+                                    "uid_limpio": uid_clean,
+                                    "evento": evento
+                                }
+                            }),
+                            loop
+                        )
+                    else:
+                        # Tarjeta no registrada → notificar al dashboard
+                        pending_cards[uid_clean] = datetime.now()
+                        print(f"  🆕 Tarjeta nueva detectada: {uid_clean}")
+
+                        asyncio.run_coroutine_threadsafe(
+                            manager.broadcast({
+                                "tipo": "tarjeta_nueva",
+                                "datos": {
+                                    "uid": uid_clean,
+                                    "fecha_deteccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                            }),
+                            loop
+                        )
+
+                connection.disconnect()
+                time.sleep(1.5)
+
+            except CardRequestTimeoutException:
+                continue
+            except Exception as e:
+                print(f"  ❌ Error leyendo tarjeta: {e}")
+                time.sleep(2)
+
+    except ImportError:
+        print("⚠️  Módulo pyscard no disponible. El lector RFID está desactivado.")
+        print("   El panel web funciona normalmente sin lector.")
+    except Exception as e:
+        print(f"⚠️  Error iniciando lector RFID: {e}")
+        print("   El panel web funciona normalmente sin lector.")
+
+
+@app.on_event("startup")
+async def startup():
+    # Crear admin por defecto si no existe
+    ensure_default_admin(db)
+
+    # Iniciar lector RFID en hilo separado
+    global rfid_loop
+    rfid_loop = asyncio.get_event_loop()
+    thread = threading.Thread(target=rfid_reader_thread, args=(rfid_loop,), daemon=True)
+    thread.start()
+
+
+# ══════════════════════════════════════════════════════════════
+#  WebSocket endpoint
+# ══════════════════════════════════════════════════════════════
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()  # mantener conexión abierta
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+
+
+# ══════════════════════════════════════════════════════════════
+#  Páginas HTML
+# ══════════════════════════════════════════════════════════════
+@app.get("/display", response_class=HTMLResponse)
+async def display_page(request: Request):
+    """Página para pantalla grande / monitor de bienvenida"""
+    return render_template("display.html", {
+        "user": None,           # Para que no falle el base.html
+        "title": "Pantalla de Bienvenida"
+    })
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    user = get_current_user(request)
+    if user:
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"error": None}
+    )
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    accesos = repo.listar_accesos(20)
+    stats = repo.contar_eventos_hoy()
+    usuarios = repo.listar_usuarios()
+
+    return templates.TemplateResponse(
+        request=request, name="index.html", context={
+            "user": user,
+            "active_page": "dashboard",
+            "accesos": accesos,
+            "stats": stats,
+            "total_usuarios": len(usuarios),
+            "ahora": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+    )
+
+# ===================== API PARA REGISTRO =====================
+
+@app.post("/api/usuarios")
+async def api_create_usuario(request: Request, nombre: str = Form(...), uid: str = Form(...), notas: str = Form(None)):
+    user = get_current_user(request)
+    if not user or user.get("rol") != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    
+    resultado = repo.crear_usuario(uid, nombre, notas)
+    return {"status": "ok", "mensaje": "Usuario registrado correctamente"}
+
+
+@app.get("/usuarios", response_class=HTMLResponse)
+async def usuarios_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user.get("rol") != "admin":
+        return RedirectResponse("/", status_code=303)
+
+    usuarios = repo.listar_usuarios()
+    return templates.TemplateResponse(
+        request=request, name="usuarios.html", context={
+            "user": user,
+            "active_page": "usuarios",
+            "usuarios": usuarios
+        }
+    )
+
+
+@app.get("/admins", response_class=HTMLResponse)
+async def admins_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    if user.get("rol") != "admin":
+        return RedirectResponse("/", status_code=303)
+
+    admins = repo.listar_admins()
+    return templates.TemplateResponse(
+        request=request, name="admins.html", context={
+            "user": user,
+            "active_page": "admins",
+            "admins": admins
+        }
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  API — Autenticación
+# ══════════════════════════════════════════════════════════════
+
+@app.post("/api/login")
+async def api_login(request: Request, username: str = Form(...), password: str = Form(...)):
+    admin = repo.get_admin_by_username(username)
+    if not admin or not verify_password(password, admin["password_hash"]):
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"error": "Usuario o contraseña incorrectos"},
+            status_code=401
+        )
+
+    if not admin["activo"]:
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"error": "Cuenta desactivada. Contacta al administrador."},
+            status_code=403
+        )
+
+    token = create_token({
+        "sub": admin["username"],
+        "nombre": admin["nombre_completo"],
+        "rol": admin["rol"],
+        "id": admin["id"]
+    })
+
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(COOKIE_NAME, token, httponly=True, max_age=43200)
+    return response
+
+
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME)
+    return response
+
+
+# ══════════════════════════════════════════════════════════════
+#  API — Usuarios de tarjetas RFID
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/usuarios")
+def api_listar_usuarios(q: str = ""):
+    if q:
+        return repo.buscar_usuarios(q)
+    return repo.listar_usuarios()
+
+
+@app.post("/api/usuarios")
+def api_crear_usuario(uid: str = Form(...), nombre: str = Form(...), notas: str = Form("")):
+    try:
+        # Verificar que no exista
+        if repo.get_usuario(uid):
+            return JSONResponse({"status": "error", "mensaje": "Ya existe un usuario con ese UID"}, status_code=400)
+        repo.crear_usuario(uid, nombre, notas)
+        # Eliminar de pendientes si estaba
+        pending_cards.pop(uid, None)
+        return JSONResponse({"status": "ok", "mensaje": "Usuario registrado correctamente"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+@app.put("/api/usuarios/{uid}")
+async def api_actualizar_usuario(uid: str, request: Request):
+    try:
+        body = await request.json()
+        nombre = body.get("nombre", "")
+        notas = body.get("notas", "")
+        if not nombre:
+            return JSONResponse({"status": "error", "mensaje": "El nombre es obligatorio"}, status_code=400)
+        repo.actualizar_usuario(uid, nombre, notas)
+        return JSONResponse({"status": "ok", "mensaje": "Usuario actualizado"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+@app.delete("/api/usuarios/{uid}")
+def api_eliminar_usuario(uid: str):
+    try:
+        repo.eliminar_usuario(uid)
+        return JSONResponse({"status": "ok", "mensaje": "Usuario eliminado"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+# ══════════════════════════════════════════════════════════════
+#  API — Accesos
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/accesos")
+def api_listar_accesos():
+    accesos = repo.listar_accesos(50)
+    # Serializar datetime para JSON
+    for a in accesos:
+        if isinstance(a.get("fecha_hora"), datetime):
+            a["fecha_hora"] = a["fecha_hora"].strftime("%Y-%m-%d %H:%M:%S")
+    return accesos
+
+
+@app.get("/api/stats")
+def api_stats():
+    stats = repo.contar_eventos_hoy()
+    total = len(repo.listar_usuarios())
+    return {"entradas_hoy": stats["entradas"], "salidas_hoy": stats["salidas"], "total_usuarios": total}
+
+
+# ══════════════════════════════════════════════════════════════
+#  API — Admin users
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/admins")
+def api_listar_admins():
+    admins = repo.listar_admins()
+    for a in admins:
+        if isinstance(a.get("fecha_creacion"), datetime):
+            a["fecha_creacion"] = a["fecha_creacion"].strftime("%Y-%m-%d %H:%M:%S")
+    return admins
+
+
+@app.post("/api/admins")
+async def api_crear_admin(request: Request):
+    try:
+        body = await request.json()
+        username = body.get("username", "").strip()
+        password = body.get("password", "").strip()
+        nombre = body.get("nombre_completo", "").strip()
+        rol = body.get("rol", "profesor")
+
+        if not username or not password or not nombre:
+            return JSONResponse({"status": "error", "mensaje": "Todos los campos son obligatorios"}, status_code=400)
+
+        if repo.get_admin_by_username(username):
+            return JSONResponse({"status": "error", "mensaje": "El nombre de usuario ya existe"}, status_code=400)
+
+        hashed = hash_password(password)
+        new_id = repo.crear_admin(username, hashed, nombre, rol)
+        return JSONResponse({"status": "ok", "mensaje": "Cuenta creada", "id": new_id})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+@app.put("/api/admins/{admin_id}")
+async def api_actualizar_admin(admin_id: int, request: Request):
+    try:
+        body = await request.json()
+        nombre = body.get("nombre_completo", "").strip()
+        rol = body.get("rol", "profesor")
+        activo = body.get("activo", True)
+
+        if not nombre:
+            return JSONResponse({"status": "error", "mensaje": "El nombre es obligatorio"}, status_code=400)
+
+        repo.actualizar_admin(admin_id, nombre, rol, 1 if activo else 0)
+
+        # Si cambian contraseña
+        new_pass = body.get("password", "").strip()
+        if new_pass:
+            repo.actualizar_password_admin(admin_id, hash_password(new_pass))
+
+        return JSONResponse({"status": "ok", "mensaje": "Cuenta actualizada"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+@app.delete("/api/admins/{admin_id}")
+def api_eliminar_admin(admin_id: int):
+    try:
+        repo.eliminar_admin(admin_id)
+        return JSONResponse({"status": "ok", "mensaje": "Cuenta eliminada"})
+    except Exception as e:
+        return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
+
+
+# ══════════════════════════════════════════════════════════════
+#  API — Tarjetas pendientes
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/api/pending-cards")
+def api_pending_cards():
+    return [{"uid": uid, "detectada": ts.strftime("%Y-%m-%d %H:%M:%S")} for uid, ts in pending_cards.items()]
+
+
+# ══════════════════════════════════════════════════════════════
+#  Informes PDF
+# ══════════════════════════════════════════════════════════════
+
+@app.get("/informes", response_class=HTMLResponse)
+async def informes_page(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    usuarios = repo.listar_usuarios()
+    return templates.TemplateResponse(
+        request=request, name="informes.html", context={
+            "user": user,
+            "active_page": "informes",
+            "usuarios": usuarios
+        }
+    )
+# Variable global para evitar procesar la misma tarjeta muy rápido
+last_processed = {}
+
+@app.post("/api/tarjeta")
+async def recibir_tarjeta(data: dict):
+    uid = data.get("uid")
+    if not uid:
+        return {"status": "error"}
+
+    import time
+    now = time.time()
+
+    # Anti-rebote: ignorar la misma tarjeta durante 6 segundos
+    if uid in last_processed and now - last_processed[uid] < 6:
+        print(f"⏭️ Tarjeta {uid} ignorada (anti-rebote)")
+        return {"status": "ignored"}
+
+    last_processed[uid] = now
+
+    try:
+        usuario = repo.get_usuario(uid)
+        ahora = datetime.now()
+
+        if not usuario:
+            await manager.broadcast({
+                "tipo": "tarjeta_nueva",
+                "datos": {"uid": uid, "fecha_deteccion": ahora.strftime("%Y-%m-%d %H:%M:%S")}
+            })
+            print(f"🆕 Tarjeta nueva: {uid}")
+            return {"status": "nueva"}
+
+        else:
+            nombre = usuario["nombre"]
+            ultimo = usuario.get("ultimo_evento")
+            evento = "SALIDA" if ultimo == "ENTRADA" else "ENTRADA"
+
+            repo.insertar_acceso(uid, nombre, evento, ahora)
+            repo.actualizar_ultimo_evento(uid, evento)
+
+            await manager.broadcast({
+                "tipo": "nuevo_acceso",
+                "datos": {
+                    "nombre": nombre,
+                    "uid_limpio": uid,
+                    "evento": evento,
+                    "fecha_hora": ahora.strftime("%Y-%m-%d %H:%M:%S")
+                }
+            })
+            print(f"✅ {evento} registrado: {nombre}")
+            return {"status": "ok", "evento": evento}
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"status": "error"}
+@app.get("/api/informe-pdf")
+async def api_informe_pdf(request: Request,
+                          uid: str = "",
+                          fecha_desde: str = "",
+                          fecha_hasta: str = "",
+                          hora_desde: str = "",
+                          hora_hasta: str = "",
+                          evento: str = ""):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autorizado"}, status_code=401)
+
+    # Obtener registros filtrados
+    accesos = repo.filtrar_accesos(
+        uid=uid or None,
+        fecha_desde=fecha_desde or None,
+        fecha_hasta=fecha_hasta or None,
+        hora_desde=hora_desde or None,
+        hora_hasta=hora_hasta or None,
+        evento=evento or None
+    )
+
+    # Construir filtros para la cabecera del PDF
+    filtros = {}
+    if uid:
+        u = repo.get_usuario(uid)
+        filtros["usuario"] = f"{u['nombre']} ({uid})" if u else uid
+    if fecha_desde:
+        filtros["fecha_desde"] = fecha_desde
+    if fecha_hasta:
+        filtros["fecha_hasta"] = fecha_hasta
+    if hora_desde:
+        filtros["hora_desde"] = hora_desde
+    if hora_hasta:
+        filtros["hora_hasta"] = hora_hasta
+    if evento:
+        filtros["evento"] = evento
+
+    # Logo path
+    logo_path = os.path.join("static", "img", "logo.png")
+    if not os.path.exists(logo_path):
+        logo_path = None
+
+    from pdf_generator import generar_informe_pdf
+    pdf_bytes = generar_informe_pdf(
+        accesos=accesos,
+        generado_por=user.get("nombre", "Sistema"),
+        filtros=filtros,
+        logo_path=logo_path
+    )
+
+    # Nombre del archivo
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"informe_accesos_{ts}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@app.get("/api/preview-accesos")
+async def api_preview_accesos(request: Request,
+                               uid: str = "",
+                               fecha_desde: str = "",
+                               fecha_hasta: str = "",
+                               hora_desde: str = "",
+                               hora_hasta: str = "",
+                               evento: str = ""):
+    """Preview de los registros filtrados sin generar PDF."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autorizado"}, status_code=401)
+
+    accesos = repo.filtrar_accesos(
+        uid=uid or None,
+        fecha_desde=fecha_desde or None,
+        fecha_hasta=fecha_hasta or None,
+        hora_desde=hora_desde or None,
+        hora_hasta=hora_hasta or None,
+        evento=evento or None
+    )
+
+    # Serializar fechas
+    for a in accesos:
+        if isinstance(a.get("fecha_hora"), datetime):
+            a["fecha_hora"] = a["fecha_hora"].strftime("%Y-%m-%d %H:%M:%S")
+
+    total = len(accesos)
+    entradas = sum(1 for a in accesos if a.get("evento") == "ENTRADA")
+    salidas = sum(1 for a in accesos if a.get("evento") == "SALIDA")
+
+    return {
+        "total": total,
+        "entradas": entradas,
+        "salidas": salidas,
+        "accesos": accesos[:100]  # Limitar preview a 100 registros
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  Main
+# ══════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    print("🚀 Sistema RFID — IES D. Antonio Hellín Costa")
+    print("   Panel web: http://127.0.0.1:8000")
+    print("   Login por defecto: admin / admin123\n")
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

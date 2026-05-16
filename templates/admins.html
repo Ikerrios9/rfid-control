@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+
+{% block title %}Cuentas del Sistema{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🔐 Cuentas del Sistema</h1>
+        <p class="subtitle">Administra las cuentas que pueden acceder al panel</p>
+    </div>
+    <button class="btn btn-primary" onclick="openAddAdminModal()" id="btnAddAdmin">
+        <i class="bi bi-person-plus-fill"></i> Nueva Cuenta
+    </button>
+</div>
+
+<!-- Panel de admins -->
+<div class="panel">
+    <div class="panel-header">
+        <h2><i class="bi bi-people-fill"></i> Cuentas ({{ admins|length }})</h2>
+    </div>
+    <div class="panel-body">
+        <table class="data-table" id="adminsTable">
+            <thead>
+                <tr>
+                    <th>Nombre Completo</th>
+                    <th>Usuario</th>
+                    <th>Rol</th>
+                    <th>Estado</th>
+                    <th>Fecha Creación</th>
+                    <th style="text-align: center;">Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="adminsTableBody">
+                {% for a in admins %}
+                <tr data-id="{{ a.id }}">
+                    <td class="col-name">{{ a.nombre_completo }}</td>
+                    <td style="color: var(--text-secondary);">@{{ a.username }}</td>
+                    <td>
+                        {% if a.rol == 'admin' %}
+                        <span class="badge badge-admin"><i class="bi bi-shield-check"></i> Admin</span>
+                        {% else %}
+                        <span class="badge badge-profesor"><i class="bi bi-mortarboard"></i> Profesor</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if a.activo %}
+                        <span class="badge badge-activo"><i class="bi bi-check-circle"></i> Activo</span>
+                        {% else %}
+                        <span class="badge badge-inactivo"><i class="bi bi-x-circle"></i> Inactivo</span>
+                        {% endif %}
+                    </td>
+                    <td style="color: var(--text-muted); font-size: 0.85rem;">{{ a.fecha_creacion }}</td>
+                    <td>
+                        <div class="actions-cell" style="justify-content: center;">
+                            <button class="btn btn-ghost btn-sm" 
+                                    onclick="openEditAdminModal({{ a.id }}, '{{ a.nombre_completo }}', '{{ a.rol }}', {{ 'true' if a.activo else 'false' }})"
+                                    title="Editar">
+                                <i class="bi bi-pencil"></i> Editar
+                            </button>
+                            {% if a.username != 'admin' %}
+                            <button class="btn btn-danger btn-sm" 
+                                    onclick="confirmDeleteAdmin({{ a.id }}, '{{ a.nombre_completo }}')" 
+                                    title="Eliminar">
+                                <i class="bi bi-trash3"></i>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal: Añadir admin -->
+<div class="modal-overlay" id="addAdminModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-person-plus"></i> Nueva Cuenta</h3>
+            <button class="modal-close" onclick="closeModal('addAdminModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">Nombre de usuario</label>
+                <input type="text" class="form-input" id="adminAddUsername" placeholder="usuario_ejemplo" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Nombre completo</label>
+                <input type="text" class="form-input" id="adminAddNombre" placeholder="Juan García López">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Contraseña</label>
+                <input type="password" class="form-input" id="adminAddPassword" placeholder="Mínimo 4 caracteres" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Rol</label>
+                <select class="form-select" id="adminAddRol">
+                    <option value="profesor">Profesor (solo ver dashboard)</option>
+                    <option value="admin">Admin (control total)</option>
+                </select>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('addAdminModalOverlay')">Cancelar</button>
+            <button class="btn btn-success" onclick="submitAddAdmin()" id="addAdminSubmitBtn">
+                <i class="bi bi-check-lg"></i> Crear Cuenta
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Editar admin -->
+<div class="modal-overlay" id="editAdminModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-pencil-square"></i> Editar Cuenta</h3>
+            <button class="modal-close" onclick="closeModal('editAdminModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <input type="hidden" id="editAdminId">
+            <div class="form-group">
+                <label class="form-label">Nombre completo</label>
+                <input type="text" class="form-input" id="editAdminNombre" placeholder="Nombre completo">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Nueva contraseña (dejar vacío para no cambiar)</label>
+                <input type="password" class="form-input" id="editAdminPassword" placeholder="Dejar vacío si no cambia" autocomplete="new-password">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Rol</label>
+                <select class="form-select" id="editAdminRol">
+                    <option value="profesor">Profesor</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Estado</label>
+                <select class="form-select" id="editAdminActivo">
+                    <option value="1">Activo</option>
+                    <option value="0">Inactivo</option>
+                </select>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('editAdminModalOverlay')">Cancelar</button>
+            <button class="btn btn-primary" onclick="submitEditAdmin()" id="editAdminSubmitBtn">
+                <i class="bi bi-check-lg"></i> Guardar Cambios
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Confirmar eliminar -->
+<div class="modal-overlay" id="deleteAdminModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-exclamation-triangle" style="color: var(--accent-red);"></i> Confirmar Eliminación</h3>
+            <button class="modal-close" onclick="closeModal('deleteAdminModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <p style="color: var(--text-secondary);">
+                ¿Estás seguro de que deseas eliminar la cuenta de <strong id="deleteAdminName" style="color: var(--text-primary);"></strong>?
+            </p>
+            <p style="color: var(--accent-amber); font-size: 0.82rem; margin-top: 8px;">
+                <i class="bi bi-info-circle"></i> Esta persona ya no podrá acceder al panel.
+            </p>
+            <input type="hidden" id="deleteAdminId">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('deleteAdminModalOverlay')">Cancelar</button>
+            <button class="btn btn-danger" onclick="submitDeleteAdmin()" id="deleteAdminSubmitBtn">
+                <i class="bi bi-trash3"></i> Eliminar
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function openAddAdminModal() {
+        document.getElementById('adminAddUsername').value = '';
+        document.getElementById('adminAddNombre').value = '';
+        document.getElementById('adminAddPassword').value = '';
+        document.getElementById('adminAddRol').value = 'profesor';
+        document.getElementById('addAdminModalOverlay').classList.add('show');
+        setTimeout(() => document.getElementById('adminAddUsername').focus(), 300);
+    }
+
+    function openEditAdminModal(id, nombre, rol, activo) {
+        document.getElementById('editAdminId').value = id;
+        document.getElementById('editAdminNombre').value = nombre;
+        document.getElementById('editAdminPassword').value = '';
+        document.getElementById('editAdminRol').value = rol;
+        document.getElementById('editAdminActivo').value = activo ? '1' : '0';
+        document.getElementById('editAdminModalOverlay').classList.add('show');
+    }
+
+    function confirmDeleteAdmin(id, nombre) {
+        document.getElementById('deleteAdminId').value = id;
+        document.getElementById('deleteAdminName').textContent = nombre;
+        document.getElementById('deleteAdminModalOverlay').classList.add('show');
+    }
+
+    function closeModal(id) {
+        document.getElementById(id).classList.remove('show');
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  CRUD Admin
+    // ══════════════════════════════════════════════════════
+
+    async function submitAddAdmin() {
+        const username = document.getElementById('adminAddUsername').value.trim();
+        const nombre = document.getElementById('adminAddNombre').value.trim();
+        const password = document.getElementById('adminAddPassword').value;
+        const rol = document.getElementById('adminAddRol').value;
+
+        if (!username || !nombre || !password) {
+            showToast('warning', 'Campos requeridos', 'Todos los campos son obligatorios.');
+            return;
+        }
+
+        if (password.length < 4) {
+            showToast('warning', 'Contraseña corta', 'La contraseña debe tener al menos 4 caracteres.');
+            return;
+        }
+
+        const btn = document.getElementById('addAdminSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/admins', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, nombre_completo: nombre, password, rol })
+            });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Cuenta creada', `${nombre} puede acceder al panel.`);
+                closeModal('addAdminModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function submitEditAdmin() {
+        const id = document.getElementById('editAdminId').value;
+        const nombre = document.getElementById('editAdminNombre').value.trim();
+        const password = document.getElementById('editAdminPassword').value;
+        const rol = document.getElementById('editAdminRol').value;
+        const activo = document.getElementById('editAdminActivo').value === '1';
+
+        if (!nombre) {
+            showToast('warning', 'Campo requerido', 'El nombre es obligatorio.');
+            return;
+        }
+
+        const btn = document.getElementById('editAdminSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const body = { nombre_completo: nombre, rol, activo };
+            if (password) body.password = password;
+
+            const res = await fetch(`/api/admins/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Cuenta actualizada', `${nombre} ha sido actualizado.`);
+                closeModal('editAdminModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function submitDeleteAdmin() {
+        const id = document.getElementById('deleteAdminId').value;
+        const btn = document.getElementById('deleteAdminSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`/api/admins/${id}`, { method: 'DELETE' });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Cuenta eliminada', 'La cuenta ha sido eliminada.');
+                closeModal('deleteAdminModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+</script>
+{% endblock %}

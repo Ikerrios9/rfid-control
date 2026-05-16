@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+
+{% block title %}Generar Informe{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>📄 Generar Informe PDF</h1>
+        <p class="subtitle">Exporta registros de acceso filtrados a un documento PDF profesional</p>
+    </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 380px 1fr; gap: 24px; align-items: start;">
+
+    <!-- Panel de filtros -->
+    <div class="panel">
+        <div class="panel-header">
+            <h2><i class="bi bi-funnel-fill"></i> Filtros</h2>
+        </div>
+        <div class="panel-body with-padding">
+
+            <!-- Usuario -->
+            <div class="form-group">
+                <label class="form-label">Usuario / Persona</label>
+                <select class="form-select" id="filterUid">
+                    <option value="">— Todos los usuarios —</option>
+                    {% for u in usuarios %}
+                    <option value="{{ u.uid_limpio }}">{{ u.nombre }} ({{ u.uid_limpio }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Rango de fechas -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                    <label class="form-label">Fecha desde</label>
+                    <input type="date" class="form-input" id="filterFechaDesde">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Fecha hasta</label>
+                    <input type="date" class="form-input" id="filterFechaHasta">
+                </div>
+            </div>
+
+            <!-- Rango de horas -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                    <label class="form-label">Hora desde</label>
+                    <input type="time" class="form-input" id="filterHoraDesde">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Hora hasta</label>
+                    <input type="time" class="form-input" id="filterHoraHasta">
+                </div>
+            </div>
+
+            <!-- Tipo de evento -->
+            <div class="form-group">
+                <label class="form-label">Tipo de evento</label>
+                <select class="form-select" id="filterEvento">
+                    <option value="">— Todos (entradas y salidas) —</option>
+                    <option value="ENTRADA">Solo Entradas</option>
+                    <option value="SALIDA">Solo Salidas</option>
+                </select>
+            </div>
+
+            <hr style="border-color: var(--border-color); margin: 16px 0;">
+
+            <!-- Botones -->
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+                <button class="btn btn-success" onclick="downloadPDF()" id="btnDownload" style="width: 100%; justify-content: center;" disabled>
+                    <i class="bi bi-file-earmark-pdf"></i> Descargar PDF
+                </button>
+                <button class="btn btn-ghost" onclick="clearFilters()" style="width: 100%; justify-content: center;">
+                    <i class="bi bi-arrow-counterclockwise"></i> Limpiar filtros
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Panel de vista previa -->
+    <div>
+        <!-- Stats del preview -->
+        <div class="stats-grid" id="previewStats" style="display: none; margin-bottom: 20px;">
+            <div class="stat-card blue">
+                <div class="stat-icon">📋</div>
+                <div class="stat-value" id="prevTotal">0</div>
+                <div class="stat-label">Total registros</div>
+            </div>
+            <div class="stat-card green">
+                <div class="stat-icon">🟢</div>
+                <div class="stat-value" id="prevEntradas">0</div>
+                <div class="stat-label">Entradas</div>
+            </div>
+            <div class="stat-card cyan">
+                <div class="stat-icon">🔵</div>
+                <div class="stat-value" id="prevSalidas">0</div>
+                <div class="stat-label">Salidas</div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <h2><i class="bi bi-table"></i> Vista Previa del Informe</h2>
+                <span id="previewCount" style="color: var(--text-muted); font-size: 0.82rem;"></span>
+            </div>
+            <div class="panel-body" id="previewBody">
+                <!-- Estado inicial -->
+                <div class="empty-state" id="previewEmpty" style="display: none;">
+                    <div class="empty-icon">📄</div>
+                    <p>No se encontraron registros con estos filtros.</p>
+                    <p style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">
+                        El PDF incluirá tu nombre como autor del informe.
+                    </p>
+                </div>
+
+                <!-- Tabla de preview -->
+                <table class="data-table" id="previewTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Fecha y Hora</th>
+                            <th>Nombre</th>
+                            <th>UID</th>
+                            <th>Evento</th>
+                        </tr>
+                    </thead>
+                    <tbody id="previewTableBody"></tbody>
+                </table>
+
+                <!-- Loading -->
+                <div class="empty-state" id="previewLoading" style="display: none;">
+                    <div class="empty-icon" style="animation: spin 1s linear infinite;">⏳</div>
+                    <p>Cargando resultados...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info del PDF -->
+        <div style="margin-top: 12px; padding: 12px 16px; background: var(--bg-glass); border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+            <p style="font-size: 0.78rem; color: var(--text-muted);">
+                <i class="bi bi-info-circle"></i>
+                El PDF generado incluirá: cabecera con el nombre del centro, autor del informe
+                (<strong style="color: var(--text-secondary);">{{ user.nombre }}</strong>),
+                filtros aplicados, resumen estadístico, y tabla detallada con todos los registros.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ══════════════════════════════════════════════════════
+    //  Construir query string con los filtros
+    // ══════════════════════════════════════════════════════
+
+    function buildQueryString() {
+        const params = new URLSearchParams();
+        const uid = document.getElementById('filterUid').value;
+        const fechaDesde = document.getElementById('filterFechaDesde').value;
+        const fechaHasta = document.getElementById('filterFechaHasta').value;
+        const horaDesde = document.getElementById('filterHoraDesde').value;
+        const horaHasta = document.getElementById('filterHoraHasta').value;
+        const evento = document.getElementById('filterEvento').value;
+
+        if (uid) params.set('uid', uid);
+        if (fechaDesde) params.set('fecha_desde', fechaDesde);
+        if (fechaHasta) params.set('fecha_hasta', fechaHasta);
+        if (horaDesde) params.set('hora_desde', horaDesde);
+        if (horaHasta) params.set('hora_hasta', horaHasta);
+        if (evento) params.set('evento', evento);
+
+        return params.toString();
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Vista previa
+    // ══════════════════════════════════════════════════════
+
+    async function previewResults() {
+        const loading = document.getElementById('previewLoading');
+        const empty = document.getElementById('previewEmpty');
+        const table = document.getElementById('previewTable');
+        const tbody = document.getElementById('previewTableBody');
+        const stats = document.getElementById('previewStats');
+        const downloadBtn = document.getElementById('btnDownload');
+
+        empty.style.display = 'none';
+        table.style.display = 'none';
+        loading.style.display = 'block';
+
+        try {
+            const qs = buildQueryString();
+            const res = await fetch(`/api/preview-accesos?${qs}`);
+            const data = await res.json();
+
+            loading.style.display = 'none';
+
+            // Stats
+            document.getElementById('prevTotal').textContent = data.total;
+            document.getElementById('prevEntradas').textContent = data.entradas;
+            document.getElementById('prevSalidas').textContent = data.salidas;
+            stats.style.display = 'grid';
+
+            document.getElementById('previewCount').textContent =
+                data.total > 100
+                    ? `Mostrando 100 de ${data.total} registros`
+                    : `${data.total} registro(s)`;
+
+            if (data.accesos.length === 0) {
+                empty.querySelector('p').textContent = 'No se encontraron registros con estos filtros.';
+                empty.querySelector('.empty-icon').textContent = '🔍';
+                empty.style.display = 'block';
+                downloadBtn.disabled = true;
+                return;
+            }
+
+            // Rellenar tabla
+            tbody.innerHTML = '';
+            data.accesos.forEach((a, i) => {
+                const badgeClass = a.evento === 'ENTRADA' ? 'badge-entrada' : 'badge-salida';
+                const icon = a.evento === 'ENTRADA' ? 'bi-arrow-right-circle' : 'bi-arrow-left-circle';
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td style="color: var(--text-muted); font-size: 0.8rem;">${i + 1}</td>
+                    <td>${a.fecha_hora}</td>
+                    <td class="col-name">${a.nombre_usuario || a.nombre}</td>
+                    <td><span class="col-uid">${a.uid_limpio}</span></td>
+                    <td><span class="badge ${badgeClass}"><i class="bi ${icon}"></i> ${a.evento}</span></td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            table.style.display = 'table';
+            downloadBtn.disabled = false;
+
+        } catch (e) {
+            loading.style.display = 'none';
+            empty.querySelector('p').textContent = 'Error al cargar los datos.';
+            empty.querySelector('.empty-icon').textContent = '❌';
+            empty.style.display = 'block';
+            showToast('error', 'Error', 'No se pudieron cargar los registros.');
+        }
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Auto-actualizar vista previa al cambiar filtros
+    // ══════════════════════════════════════════════════════
+
+    let previewTimer = null;
+    function schedulePreview() {
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(previewResults, 300);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const ids = ['filterUid', 'filterFechaDesde', 'filterFechaHasta',
+                     'filterHoraDesde', 'filterHoraHasta', 'filterEvento'];
+        ids.forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener('change', schedulePreview);
+            el.addEventListener('input', schedulePreview);
+        });
+        // Carga inicial: mostrar todo
+        previewResults();
+    });
+
+    // ══════════════════════════════════════════════════════
+    //  Descargar PDF
+    // ══════════════════════════════════════════════════════
+
+    async function downloadPDF() {
+        const qs = buildQueryString();
+        const btn = document.getElementById('btnDownload');
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Generando PDF...';
+
+        try {
+            const res = await fetch(`/api/informe-pdf?${qs}`);
+            if (!res.ok) throw new Error('Error generando PDF');
+
+            const blob = await res.blob();
+
+            // Nombre por defecto del archivo
+            const disposition = res.headers.get('Content-Disposition') || '';
+            let filename = 'informe_accesos.pdf';
+            const match = disposition.match(/filename=([^;]+)/);
+            if (match) filename = match[1].trim();
+
+            // Intentar usar "Guardar como" nativo (File System Access API)
+            if (window.showSaveFilePicker) {
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: filename,
+                        types: [{
+                            description: 'Documento PDF',
+                            accept: { 'application/pdf': ['.pdf'] }
+                        }]
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    showToast('success', 'PDF guardado', `Informe guardado correctamente.`);
+                    return;
+                } catch (pickerErr) {
+                    // Si el usuario cancela el diálogo, no hacer nada
+                    if (pickerErr.name === 'AbortError') return;
+                }
+            }
+
+            // Fallback: descarga directa
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            showToast('success', 'PDF generado', `Informe descargado: ${filename}`);
+
+        } catch (e) {
+            showToast('error', 'Error', 'No se pudo generar el PDF.');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-file-earmark-pdf"></i> Descargar PDF';
+        }
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Limpiar filtros
+    // ══════════════════════════════════════════════════════
+
+    function clearFilters() {
+        document.getElementById('filterUid').value = '';
+        document.getElementById('filterFechaDesde').value = '';
+        document.getElementById('filterFechaHasta').value = '';
+        document.getElementById('filterHoraDesde').value = '';
+        document.getElementById('filterHoraHasta').value = '';
+        document.getElementById('filterEvento').value = '';
+        previewResults();
+    }
+</script>
+{% endblock %}

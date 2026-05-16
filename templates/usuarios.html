@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+
+{% block title %}Usuarios de Tarjetas{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>🪪 Usuarios de Tarjetas</h1>
+        <p class="subtitle">Gestión de tarjetas RFID registradas en el sistema</p>
+    </div>
+    <button class="btn btn-primary" onclick="openAddModal()" id="btnAddUser">
+        <i class="bi bi-person-plus-fill"></i> Nuevo Usuario
+    </button>
+</div>
+
+<!-- Panel de usuarios -->
+<div class="panel">
+    <div class="toolbar">
+        <div class="search-bar">
+            <span class="search-icon"><i class="bi bi-search"></i></span>
+            <input type="text" id="searchInput" placeholder="Buscar por nombre o UID..." oninput="filterUsers()">
+        </div>
+        <span style="color: var(--text-muted); font-size: 0.82rem;" id="userCount">
+            {{ usuarios|length }} usuario(s) registrados
+        </span>
+    </div>
+    <div class="panel-body">
+        <table class="data-table" id="usersTable">
+            <thead>
+                <tr>
+                    <th>Nombre</th>
+                    <th>UID Tarjeta</th>
+                    <th>Fecha Registro</th>
+                    <th>Último Evento</th>
+                    <th>Notas</th>
+                    <th style="text-align: center;">Acciones</th>
+                </tr>
+            </thead>
+            <tbody id="usersTableBody">
+                {% for u in usuarios %}
+                <tr data-uid="{{ u.uid_limpio }}" data-nombre="{{ u.nombre }}" data-notas="{{ u.notas or '' }}">
+                    <td class="col-name">{{ u.nombre }}</td>
+                    <td><span class="col-uid">{{ u.uid_limpio }}</span></td>
+                    <td>{{ u.fecha_registro }}</td>
+                    <td>
+                        {% if u.ultimo_evento == 'ENTRADA' %}
+                        <span class="badge badge-entrada"><i class="bi bi-arrow-right-circle"></i> ENTRADA</span>
+                        {% elif u.ultimo_evento == 'SALIDA' %}
+                        <span class="badge badge-salida"><i class="bi bi-arrow-left-circle"></i> SALIDA</span>
+                        {% else %}
+                        <span style="color: var(--text-muted); font-size: 0.82rem;">—</span>
+                        {% endif %}
+                    </td>
+                    <td style="color: var(--text-muted); font-size: 0.85rem;">{{ u.notas or '—' }}</td>
+                    <td>
+                        <div class="actions-cell" style="justify-content: center;">
+                            <button class="btn btn-ghost btn-sm" onclick="openEditModal('{{ u.uid_limpio }}', '{{ u.nombre }}', '{{ u.notas or '' }}')" title="Editar">
+                                <i class="bi bi-pencil"></i> Editar
+                            </button>
+                            <button class="btn btn-danger btn-sm" onclick="confirmDelete('{{ u.uid_limpio }}', '{{ u.nombre }}')" title="Eliminar">
+                                <i class="bi bi-trash3"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not usuarios %}
+                <tr id="emptyRow">
+                    <td colspan="6">
+                        <div class="empty-state">
+                            <div class="empty-icon">🪪</div>
+                            <p>No hay usuarios registrados. Pasa una tarjeta por el lector o añade uno manualmente.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Modal: Añadir usuario -->
+<div class="modal-overlay" id="addModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-person-plus"></i> Nuevo Usuario</h3>
+            <button class="modal-close" onclick="closeModal('addModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label class="form-label">UID de la Tarjeta</label>
+                <input type="text" class="form-input" id="addUid" placeholder="Ej: A1B2C3D4" 
+                       style="text-transform: uppercase; font-family: monospace;">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Nombre</label>
+                <input type="text" class="form-input" id="addNombre" placeholder="Nombre completo">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notas (opcional)</label>
+                <input type="text" class="form-input" id="addNotas" placeholder="Departamento, observaciones...">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('addModalOverlay')">Cancelar</button>
+            <button class="btn btn-success" onclick="submitAdd()" id="addSubmitBtn">
+                <i class="bi bi-check-lg"></i> Crear Usuario
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Editar usuario -->
+<div class="modal-overlay" id="editModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-pencil-square"></i> Editar Usuario</h3>
+            <button class="modal-close" onclick="closeModal('editModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <input type="hidden" id="editUid">
+            <div class="form-group">
+                <label class="form-label">UID de la Tarjeta</label>
+                <input type="text" class="form-input" id="editUidDisplay" readonly
+                       style="color: var(--accent-purple); font-family: monospace; cursor: not-allowed;">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Nombre</label>
+                <input type="text" class="form-input" id="editNombre" placeholder="Nombre completo">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Notas (opcional)</label>
+                <input type="text" class="form-input" id="editNotas" placeholder="Departamento, observaciones...">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('editModalOverlay')">Cancelar</button>
+            <button class="btn btn-primary" onclick="submitEdit()" id="editSubmitBtn">
+                <i class="bi bi-check-lg"></i> Guardar Cambios
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Confirmar eliminar -->
+<div class="modal-overlay" id="deleteModalOverlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3><i class="bi bi-exclamation-triangle" style="color: var(--accent-red);"></i> Confirmar Eliminación</h3>
+            <button class="modal-close" onclick="closeModal('deleteModalOverlay')"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="modal-body">
+            <p style="color: var(--text-secondary);">
+                ¿Estás seguro de que deseas eliminar al usuario <strong id="deleteUserName" style="color: var(--text-primary);"></strong>?
+            </p>
+            <p style="color: var(--accent-red); font-size: 0.82rem; margin-top: 8px;">
+                <i class="bi bi-info-circle"></i> Se eliminarán también todos sus registros de acceso. Esta acción no se puede deshacer.
+            </p>
+            <input type="hidden" id="deleteUid">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal('deleteModalOverlay')">Cancelar</button>
+            <button class="btn btn-danger" onclick="submitDelete()" id="deleteSubmitBtn">
+                <i class="bi bi-trash3"></i> Eliminar
+            </button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // ══════════════════════════════════════════════════════
+    //  Filtro de búsqueda
+    // ══════════════════════════════════════════════════════
+
+    function filterUsers() {
+        const q = document.getElementById('searchInput').value.toLowerCase().trim();
+        const rows = document.querySelectorAll('#usersTableBody tr[data-uid]');
+        let visible = 0;
+
+        rows.forEach(row => {
+            const nombre = row.dataset.nombre.toLowerCase();
+            const uid = row.dataset.uid.toLowerCase();
+            const match = nombre.includes(q) || uid.includes(q);
+            row.style.display = match ? '' : 'none';
+            if (match) visible++;
+        });
+
+        document.getElementById('userCount').textContent = `${visible} usuario(s) encontrado(s)`;
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  Modales
+    // ══════════════════════════════════════════════════════
+
+    function openAddModal() {
+        document.getElementById('addUid').value = '';
+        document.getElementById('addNombre').value = '';
+        document.getElementById('addNotas').value = '';
+        document.getElementById('addModalOverlay').classList.add('show');
+        setTimeout(() => document.getElementById('addUid').focus(), 300);
+    }
+
+    function openEditModal(uid, nombre, notas) {
+        document.getElementById('editUid').value = uid;
+        document.getElementById('editUidDisplay').value = uid;
+        document.getElementById('editNombre').value = nombre;
+        document.getElementById('editNotas').value = notas;
+        document.getElementById('editModalOverlay').classList.add('show');
+        setTimeout(() => document.getElementById('editNombre').focus(), 300);
+    }
+
+    function confirmDelete(uid, nombre) {
+        document.getElementById('deleteUid').value = uid;
+        document.getElementById('deleteUserName').textContent = nombre;
+        document.getElementById('deleteModalOverlay').classList.add('show');
+    }
+
+    function closeModal(id) {
+        document.getElementById(id).classList.remove('show');
+    }
+
+    // ══════════════════════════════════════════════════════
+    //  CRUD Operations
+    // ══════════════════════════════════════════════════════
+
+    async function submitAdd() {
+        const uid = document.getElementById('addUid').value.trim().toUpperCase().replace(/\s/g, '');
+        const nombre = document.getElementById('addNombre').value.trim();
+        const notas = document.getElementById('addNotas').value.trim();
+
+        if (!uid || !nombre) {
+            showToast('warning', 'Campos requeridos', 'El UID y el nombre son obligatorios.');
+            return;
+        }
+
+        const btn = document.getElementById('addSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const formData = new FormData();
+            formData.append('uid', uid);
+            formData.append('nombre', nombre);
+            formData.append('notas', notas);
+
+            const res = await fetch('/api/usuarios', { method: 'POST', body: formData });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Usuario creado', `${nombre} ha sido registrado.`);
+                closeModal('addModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function submitEdit() {
+        const uid = document.getElementById('editUid').value;
+        const nombre = document.getElementById('editNombre').value.trim();
+        const notas = document.getElementById('editNotas').value.trim();
+
+        if (!nombre) {
+            showToast('warning', 'Campo requerido', 'El nombre es obligatorio.');
+            return;
+        }
+
+        const btn = document.getElementById('editSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`/api/usuarios/${uid}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nombre, notas })
+            });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Usuario actualizado', `${nombre} ha sido actualizado.`);
+                closeModal('editModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function submitDelete() {
+        const uid = document.getElementById('deleteUid').value;
+        const btn = document.getElementById('deleteSubmitBtn');
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`/api/usuarios/${uid}`, { method: 'DELETE' });
+            const data = await res.json();
+
+            if (data.status === 'ok') {
+                showToast('success', 'Usuario eliminado', 'El usuario y sus accesos han sido eliminados.');
+                closeModal('deleteModalOverlay');
+                location.reload();
+            } else {
+                showToast('error', 'Error', data.mensaje);
+            }
+        } catch (e) {
+            showToast('error', 'Error de conexión', 'No se pudo conectar con el servidor.');
+        } finally {
+            btn.disabled = false;
+        }
+    }
+</script>
+{% endblock %}
