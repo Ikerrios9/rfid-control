@@ -199,7 +199,7 @@
     </div>
 
     <script>
-        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`);
         const card = document.getElementById('messageCard');
         const msgEl = document.getElementById('welcomeMessage');
         let timeoutId = null;
