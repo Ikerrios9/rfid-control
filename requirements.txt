@@ -10,3 +10,4 @@ fpdf2
 psycopg2-binary>=2.9.9
 termcolor>=2.0.0
 pyscard>=2.0.0
+requests>=2.31.0
