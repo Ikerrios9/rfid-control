@@ -4,7 +4,7 @@ Arquitectura:
 
 - **Raspberry Pi (instituto)**: corre `docker-compose up` con la app + PostgreSQL local. Es la única que habla con el lector RFID.
 - **Render**: hospeda una copia de la web + PostgreSQL para acceso desde casa / tribunal.
-- **Sincronización**: cada 20 minutos la Pi sube los registros nuevos a Render con `sync_to_cloud.py`.
+- **Sincronización**: cada 1 minuto la Pi sube los registros nuevos a Render con `sync_to_cloud.py`.
 
 ---
 
@@ -49,7 +49,7 @@ docker compose up -d --build
 - DB local: postgres en el contenedor `rfid-postgres` (puerto 5432 interno).
 - El lector RFID (pyscard) sigue funcionando porque `docker-compose.yml` expone `/dev/bus/usb`.
 
-### Configurar la sincronización cada 20 min
+### Configurar la sincronización cada 1 min
 
 En la Pi, añade la URL pública de la DB de Render como variable de entorno (no la del servicio web — la de la **DB**, *External Database URL*).
 
