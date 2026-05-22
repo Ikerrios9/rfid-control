@@ -12,6 +12,21 @@ print("=== LECTOR RFID - Ejecutando en Mac ===")
 # Conexión a la API del contenedor Docker
 API_URL = "http://localhost:8000"
 
+
+def card_still_present():
+    """True si sigue habiendo una tarjeta sobre el lector."""
+    try:
+        rs = readers()
+        if not rs:
+            return False
+        c = rs[0].createConnection()
+        c.connect()
+        c.disconnect()
+        return True
+    except Exception:
+        return False
+
+
 while True:
     try:
         card_request = CardRequest(timeout=5, cardType=AnyCardType())
@@ -34,7 +49,12 @@ while True:
                 print("   → Enviado al servidor")
 
         connection.disconnect()
-        time.sleep(1.5)
+
+        # Esperar a que retiren la tarjeta antes de aceptar la siguiente
+        # (evita duplicados y bucle entrar/salir si la dejan sobre el lector)
+        while card_still_present():
+            time.sleep(0.2)
+        time.sleep(0.3)
 
     except CardRequestTimeoutException:
         continue
