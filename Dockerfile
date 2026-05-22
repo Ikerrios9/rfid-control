@@ -12,7 +12,11 @@ RUN apt-get update && apt-get install -y \
     pcsc-tools \
     swig \
     usbutils \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Europe/Madrid
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
