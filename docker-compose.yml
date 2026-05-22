@@ -28,7 +28,7 @@ services:
       DB_USER: rfid
       DB_PASSWORD: rfidpassword
       DB_NAME: rfid
-      # CLOUD_DATABASE_URL: postgresql://...  # opcional, para sync_to_cloud.py
+      CLOUD_DATABASE_URL: ${CLOUD_DATABASE_URL:-}
     depends_on:
       db:
         condition: service_healthy

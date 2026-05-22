@@ -8,7 +8,6 @@ from db import DB
 
 SCHEMA_FILE = os.path.join(os.path.dirname(__file__), "database.sql")
 
-
 def main():
     with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
         sql = f.read()
