@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0\.."
 
 echo ============================================================
 echo   Iniciando Sistema RFID
@@ -50,6 +50,6 @@ if errorlevel 1 start "" "http://localhost:8000/display"
 echo.
 echo [4/4] Iniciando lector RFID en Windows...
 echo ============================================================
-python lector_windows.py
+python lectores\lector_windows.py
 
 endlocal

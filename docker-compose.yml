@@ -9,7 +9,7 @@ services:
       POSTGRES_DB: rfid
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./cloud/database.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rfid -d rfid"]
       interval: 5s
@@ -29,6 +29,7 @@ services:
       DB_PASSWORD: rfidpassword
       DB_NAME: rfid
       CLOUD_DATABASE_URL: ${CLOUD_DATABASE_URL:-}
+      PYTHONPATH: /app
     depends_on:
       db:
         condition: service_healthy
