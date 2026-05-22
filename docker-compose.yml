@@ -35,6 +35,7 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+      - /run/pcscd:/run/pcscd
     privileged: true
     devices:
       - /dev/bus/usb:/dev/bus/usb
