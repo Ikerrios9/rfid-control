@@ -51,15 +51,29 @@ def _delete_missing(cloud, table, key_col, local_keys):
     return deleted
 
 
+def delete_missing_all(local, cloud):
+    """Borra de la nube las filas que ya no existen en local.
+    Orden importante por FK accesos -> usuarios: hijos antes que padres."""
+    cur_local = local.cursor()
+
+    cur_local.execute("SELECT id FROM accesos")
+    ac_del = _delete_missing(cloud, "accesos", "id", [r[0] for r in cur_local.fetchall()])
+
+    cur_local.execute("SELECT uid_limpio FROM usuarios")
+    u_del = _delete_missing(cloud, "usuarios", "uid_limpio", [r[0] for r in cur_local.fetchall()])
+
+    cur_local.execute("SELECT username FROM admin_users")
+    a_del = _delete_missing(cloud, "admin_users", "username", [r[0] for r in cur_local.fetchall()])
+
+    return u_del, a_del, ac_del
+
+
 def sync_usuarios(local, cloud):
     cur_local = local.cursor()
     cur_local.execute(
         "SELECT uid_limpio, nombre, fecha_registro, notas, ultimo_evento FROM usuarios"
     )
     rows = cur_local.fetchall()
-
-    deleted = _delete_missing(cloud, "usuarios", "uid_limpio", [r[0] for r in rows])
-
     if rows:
         cur_cloud = cloud.cursor()
         execute_values(
@@ -76,7 +90,7 @@ def sync_usuarios(local, cloud):
             rows,
         )
         cloud.commit()
-    return len(rows), deleted
+    return len(rows)
 
 
 def sync_admins(local, cloud):
@@ -85,9 +99,6 @@ def sync_admins(local, cloud):
         "SELECT username, password_hash, nombre_completo, rol, activo FROM admin_users"
     )
     rows = cur_local.fetchall()
-
-    deleted = _delete_missing(cloud, "admin_users", "username", [r[0] for r in rows])
-
     if rows:
         cur_cloud = cloud.cursor()
         execute_values(
@@ -104,16 +115,11 @@ def sync_admins(local, cloud):
             rows,
         )
         cloud.commit()
-    return len(rows), deleted
+    return len(rows)
 
 
 def sync_accesos(local, cloud):
     cur_local = local.cursor()
-    cur_local.execute("SELECT id FROM accesos")
-    local_ids = [r[0] for r in cur_local.fetchall()]
-
-    deleted = _delete_missing(cloud, "accesos", "id", local_ids)
-
     cur_cloud = cloud.cursor()
     cur_cloud.execute("SELECT COALESCE(MAX(id), 0) FROM accesos")
     max_remote_id = cur_cloud.fetchone()[0]
@@ -155,7 +161,7 @@ def sync_accesos(local, cloud):
         "SELECT setval('accesos_id_seq', GREATEST((SELECT COALESCE(MAX(id), 1) FROM accesos), 1))"
     )
     cloud.commit()
-    return total, deleted
+    return total
 
 
 def main():
@@ -165,9 +171,12 @@ def main():
     local = _connect_local()
     cloud = _connect_cloud()
     try:
-        u, u_del = sync_usuarios(local, cloud)
-        a, a_del = sync_admins(local, cloud)
-        ac, ac_del = sync_accesos(local, cloud)
+        # 1) Borrados en orden FK-seguro: accesos -> usuarios -> admin_users
+        u_del, a_del, ac_del = delete_missing_all(local, cloud)
+        # 2) Upserts en orden inverso: usuarios -> admin_users -> accesos
+        u = sync_usuarios(local, cloud)
+        a = sync_admins(local, cloud)
+        ac = sync_accesos(local, cloud)
         elapsed = time.time() - start
         print(
             f"[sync] OK usuarios={u}(-{u_del}) admins={a}(-{a_del}) "
