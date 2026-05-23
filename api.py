@@ -423,7 +423,7 @@ async def recibir_tarjeta(data: dict):
 
     try:
         usuario = repo.get_usuario(uid)
-        ahora = datetime.now()
+        ahora = datetime.now().replace(microsecond=0)
 
         if not usuario:
             pending_cards[uid] = ahora
