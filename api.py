@@ -9,7 +9,6 @@ from fastapi.templating import Jinja2Templates
 from datetime import datetime
 import uvicorn
 import asyncio
-import threading
 import json
 import io
 import os
@@ -89,114 +88,10 @@ manager = ConnectionManager()
 # Variable global para tarjetas pendientes de registro
 pending_cards: dict[str, datetime] = {}  # uid -> timestamp detección
 
-# ══════════════════════════════════════════════════════════════
-#  Lector RFID — hilo en segundo plano
-# ══════════════════════════════════════════════════════════════
-
-rfid_loop = None  # referencia al event loop de asyncio
-
-def rfid_reader_thread(loop):
-    """Hilo que lee tarjetas RFID y notifica vía WebSocket."""
-    try:
-        from smartcard.System import readers
-        from smartcard.util import toHexString
-        from smartcard.Exceptions import CardRequestTimeoutException
-        from smartcard.CardRequest import CardRequest
-        from smartcard.CardType import AnyCardType
-        import time
-
-        available_readers = readers()
-        if not available_readers:
-            print("⚠️  No se detectó ningún lector RFID. El modo lector está desactivado.")
-            return
-
-        reader = available_readers[0]
-        print(f"📡 Lector RFID activo: {reader}")
-        print("   Listo para leer tarjetas...\n")
-
-        while True:
-            try:
-                card_request = CardRequest(timeout=5, cardType=AnyCardType())
-                card_service = card_request.waitforcard()
-
-                connection = card_service.connection
-                connection.connect()
-
-                GET_UID = [0xFF, 0xCA, 0x00, 0x00, 0x00]
-                data, sw1, sw2 = connection.transmit(GET_UID)
-
-                if sw1 == 0x90 and sw2 == 0x00:
-                    uid_clean = toHexString(data).replace(" ", "").upper()
-                    usuario = repo.get_usuario(uid_clean)
-
-                    if usuario:
-                        # Usuario registrado → alternar entrada/salida
-                        nombre = usuario["nombre"]
-                        ultimo = usuario["ultimo_evento"]
-                        evento = "SALIDA" if ultimo == "ENTRADA" else "ENTRADA"
-                        ahora = datetime.now()
-
-                        repo.insertar_acceso(uid_clean, nombre, evento, ahora)
-                        repo.actualizar_ultimo_evento(uid_clean, evento)
-
-                        print(f"  ✅ {nombre} — {evento} — {ahora.strftime('%H:%M:%S')}")
-
-                        # Notificar al frontend vía WebSocket
-                        asyncio.run_coroutine_threadsafe(
-                            manager.broadcast({
-                                "tipo": "nuevo_acceso",
-                                "datos": {
-                                    "fecha_hora": ahora.strftime("%Y-%m-%d %H:%M:%S"),
-                                    "nombre": nombre,
-                                    "uid_limpio": uid_clean,
-                                    "evento": evento
-                                }
-                            }),
-                            loop
-                        )
-                    else:
-                        # Tarjeta no registrada → notificar al dashboard
-                        pending_cards[uid_clean] = datetime.now()
-                        print(f"  🆕 Tarjeta nueva detectada: {uid_clean}")
-
-                        asyncio.run_coroutine_threadsafe(
-                            manager.broadcast({
-                                "tipo": "tarjeta_nueva",
-                                "datos": {
-                                    "uid": uid_clean,
-                                    "fecha_deteccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                }
-                            }),
-                            loop
-                        )
-
-                connection.disconnect()
-                time.sleep(1.5)
-
-            except CardRequestTimeoutException:
-                continue
-            except Exception as e:
-                print(f"  ❌ Error leyendo tarjeta: {e}")
-                time.sleep(2)
-
-    except ImportError:
-        print("⚠️  Módulo pyscard no disponible. El lector RFID está desactivado.")
-        print("   El panel web funciona normalmente sin lector.")
-    except Exception as e:
-        print(f"⚠️  Error iniciando lector RFID: {e}")
-        print("   El panel web funciona normalmente sin lector.")
-
-
 @app.on_event("startup")
 async def startup():
     # Crear admin por defecto si no existe
     ensure_default_admin(db)
-
-    # Iniciar lector RFID en hilo separado
-    global rfid_loop
-    rfid_loop = asyncio.get_event_loop()
-    thread = threading.Thread(target=rfid_reader_thread, args=(rfid_loop,), daemon=True)
-    thread.start()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -531,6 +426,7 @@ async def recibir_tarjeta(data: dict):
         ahora = datetime.now()
 
         if not usuario:
+            pending_cards[uid] = ahora
             await manager.broadcast({
                 "tipo": "tarjeta_nueva",
                 "datos": {"uid": uid, "fecha_deteccion": ahora.strftime("%Y-%m-%d %H:%M:%S")}
