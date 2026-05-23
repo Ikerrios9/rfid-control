@@ -1,11 +1,12 @@
 """Sincroniza la base de datos local de la Raspberry Pi con la copia en Render.
 
-Pensado para ejecutarse cada 20 minutos (cron en la Pi). Estrategia:
+La nube es un espejo de la Pi: lo que se borra en local también se borra en
+Render. Estrategia:
 
-- `usuarios`     -> upsert por uid_limpio.
-- `admin_users`  -> upsert por username.
-- `accesos`      -> incremental: se copian solo los registros con id mayor
-                    que el máximo id ya presente en la nube.
+- `usuarios`     -> upsert por uid_limpio + DELETE de los que ya no estén en local.
+- `admin_users`  -> upsert por username + DELETE de los que ya no estén en local.
+- `accesos`      -> sube los nuevos por id incremental + DELETE de los ids que
+                    ya no estén en local.
 
 Variables de entorno necesarias:
 - DATABASE_URL          (o DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME) -> Pi local.
@@ -35,31 +36,47 @@ def _connect_cloud():
     return psycopg2.connect(dsn)
 
 
+def _delete_missing(cloud, table, key_col, local_keys):
+    """Borra de `table` en la nube las filas cuya `key_col` no está en local_keys."""
+    cur = cloud.cursor()
+    if local_keys:
+        cur.execute(
+            f"DELETE FROM {table} WHERE {key_col} NOT IN %s",
+            (tuple(local_keys),),
+        )
+    else:
+        cur.execute(f"DELETE FROM {table}")
+    deleted = cur.rowcount
+    cloud.commit()
+    return deleted
+
+
 def sync_usuarios(local, cloud):
     cur_local = local.cursor()
     cur_local.execute(
         "SELECT uid_limpio, nombre, fecha_registro, notas, ultimo_evento FROM usuarios"
     )
     rows = cur_local.fetchall()
-    if not rows:
-        return 0
 
-    cur_cloud = cloud.cursor()
-    execute_values(
-        cur_cloud,
-        """
-        INSERT INTO usuarios (uid_limpio, nombre, fecha_registro, notas, ultimo_evento)
-        VALUES %s
-        ON CONFLICT (uid_limpio) DO UPDATE SET
-            nombre = EXCLUDED.nombre,
-            fecha_registro = EXCLUDED.fecha_registro,
-            notas = EXCLUDED.notas,
-            ultimo_evento = EXCLUDED.ultimo_evento
-        """,
-        rows,
-    )
-    cloud.commit()
-    return len(rows)
+    deleted = _delete_missing(cloud, "usuarios", "uid_limpio", [r[0] for r in rows])
+
+    if rows:
+        cur_cloud = cloud.cursor()
+        execute_values(
+            cur_cloud,
+            """
+            INSERT INTO usuarios (uid_limpio, nombre, fecha_registro, notas, ultimo_evento)
+            VALUES %s
+            ON CONFLICT (uid_limpio) DO UPDATE SET
+                nombre = EXCLUDED.nombre,
+                fecha_registro = EXCLUDED.fecha_registro,
+                notas = EXCLUDED.notas,
+                ultimo_evento = EXCLUDED.ultimo_evento
+            """,
+            rows,
+        )
+        cloud.commit()
+    return len(rows), deleted
 
 
 def sync_admins(local, cloud):
@@ -68,33 +85,39 @@ def sync_admins(local, cloud):
         "SELECT username, password_hash, nombre_completo, rol, activo FROM admin_users"
     )
     rows = cur_local.fetchall()
-    if not rows:
-        return 0
 
-    cur_cloud = cloud.cursor()
-    execute_values(
-        cur_cloud,
-        """
-        INSERT INTO admin_users (username, password_hash, nombre_completo, rol, activo)
-        VALUES %s
-        ON CONFLICT (username) DO UPDATE SET
-            password_hash = EXCLUDED.password_hash,
-            nombre_completo = EXCLUDED.nombre_completo,
-            rol = EXCLUDED.rol,
-            activo = EXCLUDED.activo
-        """,
-        rows,
-    )
-    cloud.commit()
-    return len(rows)
+    deleted = _delete_missing(cloud, "admin_users", "username", [r[0] for r in rows])
+
+    if rows:
+        cur_cloud = cloud.cursor()
+        execute_values(
+            cur_cloud,
+            """
+            INSERT INTO admin_users (username, password_hash, nombre_completo, rol, activo)
+            VALUES %s
+            ON CONFLICT (username) DO UPDATE SET
+                password_hash = EXCLUDED.password_hash,
+                nombre_completo = EXCLUDED.nombre_completo,
+                rol = EXCLUDED.rol,
+                activo = EXCLUDED.activo
+            """,
+            rows,
+        )
+        cloud.commit()
+    return len(rows), deleted
 
 
 def sync_accesos(local, cloud):
+    cur_local = local.cursor()
+    cur_local.execute("SELECT id FROM accesos")
+    local_ids = [r[0] for r in cur_local.fetchall()]
+
+    deleted = _delete_missing(cloud, "accesos", "id", local_ids)
+
     cur_cloud = cloud.cursor()
     cur_cloud.execute("SELECT COALESCE(MAX(id), 0) FROM accesos")
     max_remote_id = cur_cloud.fetchone()[0]
 
-    cur_local = local.cursor()
     total = 0
     while True:
         cur_local.execute(
@@ -132,7 +155,7 @@ def sync_accesos(local, cloud):
         "SELECT setval('accesos_id_seq', GREATEST((SELECT COALESCE(MAX(id), 1) FROM accesos), 1))"
     )
     cloud.commit()
-    return total
+    return total, deleted
 
 
 def main():
@@ -142,13 +165,13 @@ def main():
     local = _connect_local()
     cloud = _connect_cloud()
     try:
-        u = sync_usuarios(local, cloud)
-        a = sync_admins(local, cloud)
-        ac = sync_accesos(local, cloud)
+        u, u_del = sync_usuarios(local, cloud)
+        a, a_del = sync_admins(local, cloud)
+        ac, ac_del = sync_accesos(local, cloud)
         elapsed = time.time() - start
         print(
-            f"[sync] OK usuarios={u} admins={a} accesos_nuevos={ac} "
-            f"en {elapsed:.1f}s"
+            f"[sync] OK usuarios={u}(-{u_del}) admins={a}(-{a_del}) "
+            f"accesos_nuevos={ac}(-{ac_del}) en {elapsed:.1f}s"
         )
     except Exception as e:
         print(f"[sync] ERROR: {e}", file=sys.stderr)
