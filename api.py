@@ -1,7 +1,4 @@
-"""
-RFID Control — API + Frontend + Lector RFID integrado
-Todo en un solo servidor.
-"""
+# Importa lo necesario para trabajar con FastApi
 from fastapi import FastAPI, Request, Form, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +9,10 @@ import asyncio
 import json
 import io
 import os
-
+# Datos que son necesarios para una Api web completa
+# Conexion a la base de datos
+# Acceso a los datos
+# Sistema de autentificacion JWT
 from db import DB
 from repositorio import RFIDRepo
 from auth import (
@@ -20,21 +20,18 @@ from auth import (
     get_current_user, COOKIE_NAME, ensure_default_admin
 )
 
-# ══════════════════════════════════════════════════════════════
-#  Configuración
-# ══════════════════════════════════════════════════════════════
-
+# Crea una instancia de FastApi
 app = FastAPI(title="RFID Control — IES D. Antonio Hellín Costa")
 
 db = DB()
 repo = RFIDRepo(db)
 
-# ===================== TEMPLATES (FIX DEFINITIVO) =====================
+# Utiliza los archivos staticos
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-# Configuración ultra segura
+
 jinja_env = Environment(
     loader=FileSystemLoader("templates"),
     autoescape=select_autoescape(),
@@ -44,7 +41,7 @@ jinja_env = Environment(
 
 templates = Jinja2Templates(directory="templates")
 templates.env = jinja_env
-# ===================== RENDERIZADO SIMPLE =====================
+
 def render_template(filename: str, context: dict = None):
     if context is None:
         context = {}
@@ -57,10 +54,10 @@ def render_template(filename: str, context: dict = None):
     except Exception as e:
         print(f"Error rendering {filename}: {e}")
         return HTMLResponse(f"<h1>Error al cargar {filename}</h1>", status_code=500)
-# ══════════════════════════════════════════════════════════════
-#  WebSocket Manager — tiempo real
-# ══════════════════════════════════════════════════════════════
 
+
+# Esto nos permite que los datos se actualice en tiempo real
+# Cuando alguien pase una tarjeta
 class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
@@ -86,7 +83,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # Variable global para tarjetas pendientes de registro
-pending_cards: dict[str, datetime] = {}  # uid -> timestamp detección
+pending_cards: dict[str, datetime] = {}
 
 @app.on_event("startup")
 async def startup():
@@ -94,32 +91,29 @@ async def startup():
     ensure_default_admin(db)
 
 
-# ══════════════════════════════════════════════════════════════
-#  WebSocket endpoint
-# ══════════════════════════════════════════════════════════════
+# Mantiene la conexion activa con el frontend
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     try:
         while True:
-            await ws.receive_text()  # mantener conexión abierta
+            await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(ws)
 
 
-# ══════════════════════════════════════════════════════════════
-#  Páginas HTML
-# ══════════════════════════════════════════════════════════════
+# Rutas web, a los HTML
+# Pantalla de bienvenida
 @app.get("/display", response_class=HTMLResponse)
 async def display_page(request: Request):
-    """Página para pantalla grande / monitor de bienvenida"""
+
     return render_template("display.html", {
-        "user": None,           # Para que no falle el base.html
+        "user": None,
         "title": "Pantalla de Bienvenida"
     })
 
-
+# Login por defecto
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     user = get_current_user(request)
@@ -129,7 +123,7 @@ async def login_page(request: Request):
         request=request, name="login.html", context={"error": None}
     )
 
-
+# Verifica si el usuario esta logueado y muestra datos. sino lo manda al login
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     user = get_current_user(request)
@@ -151,8 +145,7 @@ async def dashboard(request: Request):
         }
     )
 
-# ===================== API PARA REGISTRO =====================
-
+# Rutas protegidas, solo accesible para usarios admin
 @app.post("/api/usuarios")
 async def api_create_usuario(request: Request, nombre: str = Form(...), uid: str = Form(...), notas: str = Form(None)):
     user = get_current_user(request)
@@ -199,10 +192,7 @@ async def admins_page(request: Request):
     )
 
 
-# ══════════════════════════════════════════════════════════════
-#  API — Autenticación
-# ══════════════════════════════════════════════════════════════
-
+# Verifica el usuario en la base de datos, para generar su token
 @app.post("/api/login")
 async def api_login(request: Request, username: str = Form(...), password: str = Form(...)):
     admin = repo.get_admin_by_username(username)
@@ -226,12 +216,12 @@ async def api_login(request: Request, username: str = Form(...), password: str =
         "rol": admin["rol"],
         "id": admin["id"]
     })
-
+    #Guarda el token en una cookie
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(COOKIE_NAME, token, httponly=True, max_age=43200)
     return response
 
-
+# Elimina la cookie y muesta el login
 @app.get("/logout")
 async def logout():
     response = RedirectResponse("/login", status_code=303)
@@ -239,31 +229,29 @@ async def logout():
     return response
 
 
-# ══════════════════════════════════════════════════════════════
-#  API — Usuarios de tarjetas RFID
-# ══════════════════════════════════════════════════════════════
-
+# Apis
+# Listar usuarios
 @app.get("/api/usuarios")
 def api_listar_usuarios(q: str = ""):
     if q:
         return repo.buscar_usuarios(q)
     return repo.listar_usuarios()
 
-
+# Crear usuarios
 @app.post("/api/usuarios")
 def api_crear_usuario(uid: str = Form(...), nombre: str = Form(...), notas: str = Form("")):
     try:
-        # Verificar que no exista
+        # verifica que no exista
         if repo.get_usuario(uid):
             return JSONResponse({"status": "error", "mensaje": "Ya existe un usuario con ese UID"}, status_code=400)
         repo.crear_usuario(uid, nombre, notas)
-        # Eliminar de pendientes si estaba
+        # elimina si habia una tarjeta pendiente
         pending_cards.pop(uid, None)
         return JSONResponse({"status": "ok", "mensaje": "Usuario registrado correctamente"})
     except Exception as e:
         return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
 
-
+# Actualizar usuarios, datos
 @app.put("/api/usuarios/{uid}")
 async def api_actualizar_usuario(uid: str, request: Request):
     try:
@@ -277,7 +265,7 @@ async def api_actualizar_usuario(uid: str, request: Request):
     except Exception as e:
         return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
 
-
+# Eliminar usuarios con todos sus registros
 @app.delete("/api/usuarios/{uid}")
 def api_eliminar_usuario(uid: str):
     try:
@@ -287,20 +275,18 @@ def api_eliminar_usuario(uid: str):
         return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
 
 
-# ══════════════════════════════════════════════════════════════
-#  API — Accesos
-# ══════════════════════════════════════════════════════════════
-
+# Api accesos
+# El limite que tenemos son 50 accesos que muestra, se puede modificar
 @app.get("/api/accesos")
 def api_listar_accesos():
     accesos = repo.listar_accesos(50)
-    # Serializar datetime para JSON
+
     for a in accesos:
         if isinstance(a.get("fecha_hora"), datetime):
             a["fecha_hora"] = a["fecha_hora"].strftime("%Y-%m-%d %H:%M:%S")
     return accesos
 
-
+# Entradas y salidas de un dia
 @app.get("/api/stats")
 def api_stats():
     stats = repo.contar_eventos_hoy()
@@ -308,9 +294,7 @@ def api_stats():
     return {"entradas_hoy": stats["entradas"], "salidas_hoy": stats["salidas"], "total_usuarios": total}
 
 
-# ══════════════════════════════════════════════════════════════
-#  API — Admin users
-# ══════════════════════════════════════════════════════════════
+# Api solo para administradores
 
 @app.get("/api/admins")
 def api_listar_admins():
@@ -375,19 +359,15 @@ def api_eliminar_admin(admin_id: int):
         return JSONResponse({"status": "error", "mensaje": str(e)}, status_code=500)
 
 
-# ══════════════════════════════════════════════════════════════
-#  API — Tarjetas pendientes
-# ══════════════════════════════════════════════════════════════
+# Si detecta una tarjeta nueva sin registrar.
 
 @app.get("/api/pending-cards")
 def api_pending_cards():
     return [{"uid": uid, "detectada": ts.strftime("%Y-%m-%d %H:%M:%S")} for uid, ts in pending_cards.items()]
 
 
-# ══════════════════════════════════════════════════════════════
-#  Informes PDF
-# ══════════════════════════════════════════════════════════════
-
+# Generar PDF
+# Genera usando filtros
 @app.get("/informes", response_class=HTMLResponse)
 async def informes_page(request: Request):
     user = get_current_user(request)
@@ -402,7 +382,109 @@ async def informes_page(request: Request):
             "usuarios": usuarios
         }
     )
-# Variable global para evitar procesar la misma tarjeta muy rápido
+
+# Descargar el PDF
+@app.get("/api/informe-pdf")
+async def api_informe_pdf(request: Request,
+                          uid: str = "",
+                          fecha_desde: str = "",
+                          fecha_hasta: str = "",
+                          hora_desde: str = "",
+                          hora_hasta: str = "",
+                          evento: str = ""):
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autorizado"}, status_code=401)
+
+    # Registros filtrados
+    accesos = repo.filtrar_accesos(
+        uid=uid or None,
+        fecha_desde=fecha_desde or None,
+        fecha_hasta=fecha_hasta or None,
+        hora_desde=hora_desde or None,
+        hora_hasta=hora_hasta or None,
+        evento=evento or None
+    )
+
+
+    filtros = {}
+    if uid:
+        u = repo.get_usuario(uid)
+        filtros["usuario"] = f"{u['nombre']} ({uid})" if u else uid
+    if fecha_desde:
+        filtros["fecha_desde"] = fecha_desde
+    if fecha_hasta:
+        filtros["fecha_hasta"] = fecha_hasta
+    if hora_desde:
+        filtros["hora_desde"] = hora_desde
+    if hora_hasta:
+        filtros["hora_hasta"] = hora_hasta
+    if evento:
+        filtros["evento"] = evento
+
+
+    logo_path = os.path.join("static", "img", "logo.png")
+    if not os.path.exists(logo_path):
+        logo_path = None
+
+    from pdf_generator import generar_informe_pdf
+    pdf_bytes = generar_informe_pdf(
+        accesos=accesos,
+        generado_por=user.get("nombre", "Sistema"),
+        filtros=filtros,
+        logo_path=logo_path
+    )
+
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"informe_accesos_{ts}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+# vista previa del PDF
+@app.get("/api/preview-accesos")
+async def api_preview_accesos(request: Request,
+                               uid: str = "",
+                               fecha_desde: str = "",
+                               fecha_hasta: str = "",
+                               hora_desde: str = "",
+                               hora_hasta: str = "",
+                               evento: str = ""):
+    """Preview de los registros filtrados sin generar PDF."""
+    user = get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "No autorizado"}, status_code=401)
+
+    accesos = repo.filtrar_accesos(
+        uid=uid or None,
+        fecha_desde=fecha_desde or None,
+        fecha_hasta=fecha_hasta or None,
+        hora_desde=hora_desde or None,
+        hora_hasta=hora_hasta or None,
+        evento=evento or None
+    )
+
+
+    for a in accesos:
+        if isinstance(a.get("fecha_hora"), datetime):
+            a["fecha_hora"] = a["fecha_hora"].strftime("%Y-%m-%d %H:%M:%S")
+
+    total = len(accesos)
+    entradas = sum(1 for a in accesos if a.get("evento") == "ENTRADA")
+    salidas = sum(1 for a in accesos if a.get("evento") == "SALIDA")
+
+    return {
+        "total": total,
+        "entradas": entradas,
+        "salidas": salidas,
+        "accesos": accesos[:100]  # Limitar registros sino muestras todos
+    }
+
+# Nos permite evitar registrar la misma tarjeta varias veces
 last_processed = {}
 
 @app.post("/api/tarjeta")
@@ -414,7 +496,7 @@ async def recibir_tarjeta(data: dict):
     import time
     now = time.time()
 
-    # Anti-rebote: ignorar la misma tarjeta durante 6 segundos
+
     if uid in last_processed and now - last_processed[uid] < 6:
         print(f"⏭️ Tarjeta {uid} ignorada (anti-rebote)")
         return {"status": "ignored"}
@@ -457,111 +539,8 @@ async def recibir_tarjeta(data: dict):
     except Exception as e:
         print(f"Error: {e}")
         return {"status": "error"}
-@app.get("/api/informe-pdf")
-async def api_informe_pdf(request: Request,
-                          uid: str = "",
-                          fecha_desde: str = "",
-                          fecha_hasta: str = "",
-                          hora_desde: str = "",
-                          hora_hasta: str = "",
-                          evento: str = ""):
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autorizado"}, status_code=401)
 
-    # Obtener registros filtrados
-    accesos = repo.filtrar_accesos(
-        uid=uid or None,
-        fecha_desde=fecha_desde or None,
-        fecha_hasta=fecha_hasta or None,
-        hora_desde=hora_desde or None,
-        hora_hasta=hora_hasta or None,
-        evento=evento or None
-    )
-
-    # Construir filtros para la cabecera del PDF
-    filtros = {}
-    if uid:
-        u = repo.get_usuario(uid)
-        filtros["usuario"] = f"{u['nombre']} ({uid})" if u else uid
-    if fecha_desde:
-        filtros["fecha_desde"] = fecha_desde
-    if fecha_hasta:
-        filtros["fecha_hasta"] = fecha_hasta
-    if hora_desde:
-        filtros["hora_desde"] = hora_desde
-    if hora_hasta:
-        filtros["hora_hasta"] = hora_hasta
-    if evento:
-        filtros["evento"] = evento
-
-    # Logo path
-    logo_path = os.path.join("static", "img", "logo.png")
-    if not os.path.exists(logo_path):
-        logo_path = None
-
-    from pdf_generator import generar_informe_pdf
-    pdf_bytes = generar_informe_pdf(
-        accesos=accesos,
-        generado_por=user.get("nombre", "Sistema"),
-        filtros=filtros,
-        logo_path=logo_path
-    )
-
-    # Nombre del archivo
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"informe_accesos_{ts}.pdf"
-
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-@app.get("/api/preview-accesos")
-async def api_preview_accesos(request: Request,
-                               uid: str = "",
-                               fecha_desde: str = "",
-                               fecha_hasta: str = "",
-                               hora_desde: str = "",
-                               hora_hasta: str = "",
-                               evento: str = ""):
-    """Preview de los registros filtrados sin generar PDF."""
-    user = get_current_user(request)
-    if not user:
-        return JSONResponse({"error": "No autorizado"}, status_code=401)
-
-    accesos = repo.filtrar_accesos(
-        uid=uid or None,
-        fecha_desde=fecha_desde or None,
-        fecha_hasta=fecha_hasta or None,
-        hora_desde=hora_desde or None,
-        hora_hasta=hora_hasta or None,
-        evento=evento or None
-    )
-
-    # Serializar fechas
-    for a in accesos:
-        if isinstance(a.get("fecha_hora"), datetime):
-            a["fecha_hora"] = a["fecha_hora"].strftime("%Y-%m-%d %H:%M:%S")
-
-    total = len(accesos)
-    entradas = sum(1 for a in accesos if a.get("evento") == "ENTRADA")
-    salidas = sum(1 for a in accesos if a.get("evento") == "SALIDA")
-
-    return {
-        "total": total,
-        "entradas": entradas,
-        "salidas": salidas,
-        "accesos": accesos[:100]  # Limitar preview a 100 registros
-    }
-
-
-# ══════════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════════
-
+# Iniciar el sistema
 if __name__ == "__main__":
     print("🚀 Sistema RFID — IES D. Antonio Hellín Costa")
     print("   Panel web: http://127.0.0.1:8000")
